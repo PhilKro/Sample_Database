@@ -858,7 +858,7 @@ class SampleTreeGUI:
                     self.treeview.item(node.identifier, open=True)
                 except Exception:
                     pass
-                for child in self.tree_obj.children(node_id):
+                for child in self.get_sort_children(self.tree_obj, node_id):
                     add(child.identifier, depth + 1)
 
             add(self.tree_obj.root)
