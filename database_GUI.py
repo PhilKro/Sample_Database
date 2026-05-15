@@ -478,69 +478,171 @@ class SampleTreeGUI:
         if editor.result is None:
             return
         
-        # Ask user to select destination parent by showing a dialog
-        parent_options = {}
-        if self.display_mode == "single":
-            tree = self.tree_obj
-            for node_iter in tree.all_nodes_itr():
-                if node_iter.tag == "SYSTEM":
-                    parent_options["SYSTEM (root)"] = (tree, node_iter.identifier)
-                else:
-                    obj_iter = node_iter.data.get("obj")
-                    if obj_iter:
-                        parent_options[f"{node_iter.tag} [{obj_iter.id}]"] = (tree, node_iter.identifier)
-        else:
-            for system_key, info in self.multi_trees.items():
-                tree = info["tree"]
-                file_label = os.path.basename(info["file"])
-                for node_iter in tree.all_nodes_itr():
-                    if node_iter.tag == "SYSTEM":
-                        parent_options[f"{file_label}: SYSTEM (root)"] = (tree, node_iter.identifier, system_key)
-                    else:
-                        obj_iter = node_iter.data.get("obj")
-                        if obj_iter:
-                            parent_options[f"{file_label}: {node_iter.tag} [{obj_iter.id}]"] = (tree, node_iter.identifier, system_key)
-        
-        if not parent_options:
-            messagebox.showwarning("No Parents", "No valid destination parents available.")
-            return
-        
-        # Create selection dialog
+        # Create dialog to select destination parent (tree view showing all nodes, greyed-out invalid parents)
         class DestinationDialog(tk.Toplevel):
-            def __init__(self, master, options):
+            def __init__(self, master, child_cls, single_tree=None, multi_trees=None):
                 super().__init__(master)
                 self.title("Select Destination Parent")
-                self.geometry("400x300")
+                self.geometry("450x500")
                 self.result = None
+                self.child_cls = child_cls
+                self.single_tree = single_tree
+                self.multi_trees = multi_trees or {}
+                self.node_data = {}
+                self.valid_nodes = set()
+                self.ok_btn = None
                 
                 ttk.Label(self, text="Select destination parent:").pack(anchor="w", padx=10, pady=10)
                 
-                self.listbox = tk.Listbox(self, height=12)
-                self.listbox.pack(fill="both", expand=True, padx=10, pady=5)
+                # Create treeview with scrollbar
+                tree_frame = ttk.Frame(self)
+                tree_frame.pack(fill="both", expand=True, padx=10, pady=5)
                 
-                for label in sorted(options.keys()):
-                    self.listbox.insert(tk.END, label)
+                self.treeview = ttk.Treeview(tree_frame)
+                self.treeview.pack(side="left", fill="both", expand=True)
                 
-                self.options = options
+                scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.treeview.yview)
+                scrollbar.pack(side="right", fill="y")
+                self.treeview.configure(yscrollcommand=scrollbar.set)
+                
+                # Configure tags for valid/invalid nodes
+                self.treeview.tag_configure("valid", foreground="black")
+                self.treeview.tag_configure("invalid", foreground="gray60")
+                
+                # Populate tree based on mode
+                if single_tree:
+                    self._populate_tree_single(single_tree)
+                else:
+                    self._populate_tree_multi()
+                
+                # Bind selection event
+                self.treeview.bind("<<TreeviewSelect>>", self._on_select)
                 
                 btn_frame = ttk.Frame(self)
                 btn_frame.pack(pady=10)
-                ttk.Button(btn_frame, text="OK", command=self.on_ok).pack(side="left", padx=5)
+                self.ok_btn = ttk.Button(btn_frame, text="OK", command=self.on_ok, state="disabled")
+                self.ok_btn.pack(side="left", padx=5)
                 ttk.Button(btn_frame, text="Cancel", command=self.on_cancel).pack(side="left", padx=5)
             
+            def _can_parent(self, node, tree):
+                """Check if a node can accept the child class"""
+                if node.tag == "SYSTEM":
+                    return True
+                obj = node.data.get("obj")
+                if not obj:
+                    return False
+                try:
+                    permitted = resolve_permitted_children(obj)
+                    return self.child_cls.__name__ in permitted
+                except Exception:
+                    return False
+            
+            def _populate_tree_single(self, tree):
+                """Populate tree for single-tree mode, showing all nodes with valid parents highlighted"""
+                def add_node(node_id, parent_iid=""):
+                    node = tree.get_node(node_id)
+                    if not node:
+                        return
+                    
+                    is_valid = self._can_parent(node, tree)
+                    text = self._node_display_text(node)
+                    iid = node.identifier
+                    tags = ("valid",) if is_valid else ("invalid",)
+                    
+                    self.treeview.insert(parent_iid, "end", iid=iid, text=text, tags=tags)
+                    self.node_data[iid] = (tree, node_id)
+                    
+                    if is_valid:
+                        self.valid_nodes.add(iid)
+                    
+                    # Add children regardless of parent validity
+                    for child in tree.children(node_id):
+                        add_node(child.identifier, iid)
+                
+                add_node(tree.root)
+            
+            def _populate_tree_multi(self):
+                """Populate tree for multi-tree mode, showing all nodes with valid parents highlighted"""
+                for system_key in sorted(self.multi_trees.keys()):
+                    info = self.multi_trees[system_key]
+                    tree = info["tree"]
+                    root_node = tree.get_node(tree.root)
+                    
+                    # Add system root
+                    is_valid = self._can_parent(root_node, tree)
+                    top_text = f"SYSTEM ({info.get('label', '')}) - {os.path.basename(info['file'])}"
+                    top_iid = f"SYS::{system_key}"
+                    tags = ("valid",) if is_valid else ("invalid",)
+                    
+                    self.treeview.insert("", "end", iid=top_iid, text=top_text, tags=tags)
+                    self.node_data[top_iid] = (tree, tree.root, system_key)
+                    
+                    if is_valid:
+                        self.valid_nodes.add(top_iid)
+                    
+                    # Add children recursively, regardless of parent validity
+                    def add_node(node_id, parent_iid):
+                        node = tree.get_node(node_id)
+                        if not node:
+                            return
+                        
+                        is_valid_node = self._can_parent(node, tree)
+                        text = self._node_display_text(node)
+                        iid = f"{top_iid}::{node_id}"
+                        tags = ("valid",) if is_valid_node else ("invalid",)
+                        
+                        self.treeview.insert(parent_iid, "end", iid=iid, text=text, tags=tags)
+                        self.node_data[iid] = (tree, node_id, system_key)
+                        
+                        if is_valid_node:
+                            self.valid_nodes.add(iid)
+                        
+                        for child in tree.children(node_id):
+                            add_node(child.identifier, iid)
+                    
+                    for child in tree.children(tree.root):
+                        add_node(child.identifier, top_iid)
+            
+            def _node_display_text(self, node):
+                """Get display text for a node"""
+                if node.tag == "SYSTEM":
+                    return f"SYSTEM ({node.data.get('Sample_System', '')})"
+                else:
+                    obj = node.data.get("obj")
+                    if obj:
+                        return f"{node.tag} [{obj.id}]"
+                    return node.tag
+            
+            def _on_select(self, _event):
+                """Enable/disable OK button based on selection validity"""
+                sel = self.treeview.selection()
+                if sel and sel[0] in self.valid_nodes:
+                    self.ok_btn.config(state="normal")
+                else:
+                    self.ok_btn.config(state="disabled")
+            
             def on_ok(self):
-                sel = self.listbox.curselection()
+                sel = self.treeview.selection()
                 if not sel:
                     messagebox.showwarning("Select", "Please select a destination.")
                     return
-                label = self.listbox.get(sel[0])
-                self.result = self.options.get(label)
+                
+                iid = sel[0]
+                if iid not in self.node_data or iid not in self.valid_nodes:
+                    messagebox.showwarning("Select", "Selected parent is not valid for this node type.")
+                    return
+                
+                self.result = self.node_data[iid]
                 self.destroy()
             
             def on_cancel(self):
                 self.destroy()
         
-        dest_dialog = DestinationDialog(self.root, parent_options)
+        # Create and show dialog
+        if self.display_mode == "single":
+            dest_dialog = DestinationDialog(self.root, cls, single_tree=self.tree_obj)
+        else:
+            dest_dialog = DestinationDialog(self.root, cls, multi_trees=self.multi_trees)
         self.root.wait_window(dest_dialog)
         
         if not dest_dialog.result:
