@@ -450,6 +450,7 @@ class SampleTreeGUI:
         self.sort_state = {}
         self.properties_panel = None
         self.properties_panel_tree = None
+        self.last_action_was_save_archive_close = False
         
         # Menu Bar
         menubar = tk.Menu(self.root)
@@ -1002,6 +1003,9 @@ class SampleTreeGUI:
 
 
     def on_closing(self):
+        if getattr(self, "last_action_was_save_archive_close", False) or (not self.tree_obj and not self.multi_trees):
+            self.root.destroy()
+            return
         answer = messagebox.askyesnocancel("Quit","'Yes' to save, archive and close, or 'No' to discard recent changes")
         if answer is True:  # Yes
             self._save_archive_and_close()
@@ -1076,6 +1080,7 @@ class SampleTreeGUI:
         return f"{root_iid}::{node_id}"
 
     def _refresh_after_tree_change(self, system_key=None, focus_node_id=None):
+        self.last_action_was_save_archive_close = False
         if self.display_mode == "multi":
             self.populate_multi_treeview(expand_system_key=system_key, focus_node_id=focus_node_id)
         else:
@@ -1170,6 +1175,7 @@ class SampleTreeGUI:
             # hide discover button once a tree is loaded
             self._hide_discover_button()
             self.refresh_status(f"Loaded {os.path.basename(filename)}")
+            self.last_action_was_save_archive_close = False
             try:
                 with open(os.path.join(BASE_DIR, ".db_cache.json"), "w") as f:
                     import json
@@ -1233,6 +1239,7 @@ class SampleTreeGUI:
         self.class_cb['values'] = []
         self.class_var.set("")
         self._hide_discover_button()
+        self.last_action_was_save_archive_close = False
 
         if failed:
             self.refresh_status(f"Loaded {len(loaded)} trees ({len(failed)} failed).")
@@ -1837,6 +1844,7 @@ class SampleTreeGUI:
                     serialize_tree(info["tree"], out_path, sort_mode=sort_mode)
                 self._clear_loaded_trees()
                 self.refresh_status("Ready")
+                self.last_action_was_save_archive_close = True
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to archive trees: {e}")
             return
@@ -1870,6 +1878,7 @@ class SampleTreeGUI:
         try:
             self._clear_loaded_trees()
             self.refresh_status("Ready")
+            self.last_action_was_save_archive_close = True
         except Exception as e:
             messagebox.showerror("Error", f"Failed to close tree: {e}")
 
